@@ -8,8 +8,8 @@
 //#include "esp_bt_main.h"
 //#include "esp_gap_bt_api.h"
 
-#include "SSD1306.h"
-#include "font.h" //// Created by http://oleddisplay.squix.ch/
+//#include "SSD1306.h"
+//#include "font.h" //// Created by http://oleddisplay.squix.ch/
 
 #define btnRIGHT  0
 #define btnUP     1
@@ -23,7 +23,7 @@
 #define SCL   15
 #define RST_LED   16 //RST must be set by software
 //SSD1306  display(0x3c, SDA, SCL, RST_LED);
-SSD1306  display(0x3c, 4, 15, GEOMETRY_128_64);                // ADDRESS, SDA, SCL, GEOMETRY_128_32 (or 128_64)
+//SSD1306  display(0x3c, 4, 15, GEOMETRY_128_64);                // ADDRESS, SDA, SCL, GEOMETRY_128_32 (or 128_64)
 
 // Global Define 
 #define _VERSION          0.05
@@ -122,6 +122,7 @@ uint16_t  rowerDataFlagsP2=0b1111100000001;
   // 0x0E       Targeted Training Time Changed                          New Targeted Training Time (UINT16, in Seconds with a resolution of 1)
 
 
+
 struct rowerDataKpi{
   int bpm; // Start of Part 1
   int strokeCount;
@@ -163,9 +164,12 @@ const int BUTTONSPIN = 0;
 /*-----------------CONSTANTS-------------------------------*/
 //const float Ratio = 4.8; // from old script 4.8; meters per rpm = circumference of rotor (D=34cm) -> 1,068m -> Ratio = 0.936 ; WaterRower 7,3 m/St. -> Ratio: 3.156
 //const float Ratio = 0.79; //one magnet
-const float Ratio = 3.156;
+//const float Ratio = 3.156;
+// TODO: other script 0.2081 m/rotation
+const float Ratio = 4.8;
 
 RunningAverage stm_RA(21); // size of array for strokes/min
+RunningAverage ticks(10);
 RunningAverage mps_RA(7); // size of array for meters/second -> emulates momentum of boat
 RunningAverage battery_RA(40);
 
@@ -203,6 +207,8 @@ int strokes = 0;
 int trend = 0;
 int resetTimer = 0;
 
+void reset();
+
 
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -228,7 +234,10 @@ class MyCallbacks: public BLECharacteristicCallbacks {
         else {
           for (int i = 0; i < rxValue.length(); i++) {
             char chr = rxValue[i];
-            SerialDebug.print(chr + "Int:" + (int)chr);
+            if (chr == 1)  {
+              reset();
+            }
+            SerialDebug.print(chr + " Int:" + int(chr));
           }
         }  
           SerialDebug.println();
@@ -323,11 +332,18 @@ void initBLE(){
     );            
   pService2->start();
 
+
+  char cSoftwareRevision[3];
+  cSoftwareRevision[0] = 0x34;
+  cSoftwareRevision[1] = 0x2E;
+  cSoftwareRevision[2] = 0x33;
+
   pCharacteristic24->setValue("4");
   pCharacteristic25->setValue("0000");
   pCharacteristic26->setValue("0.30");
   pCharacteristic27->setValue("2.2BLE");
-  pCharacteristic28->setValue("4.3");
+  //pCharacteristic28->setValue("4.3");
+  pCharacteristic28->setValue((uint8_t*)cSoftwareRevision, 3);
   pCharacteristic29->setValue("Waterrower");
 
   char cRower[8];
@@ -457,7 +473,7 @@ void setCxLightRowerData(){
   cRower[15] = rdKpi.averagePower & 0x000000FF;
   cRower[16] = (rdKpi.averagePower & 0x0000FF00) >> 8;
 
-  //gatt.setChar(fitnessMachineRowerDataId, cRower, 17);
+    //gatt.setChar(fitnessMachineRowerDataId, cRower, 17);
   pDtCharacteristic->setValue((uint8_t* )cRower, 17);
   pDtCharacteristic->notify();
 
@@ -567,13 +583,13 @@ void setCxBattery(){
 }
 
 void row_start() {
-  display.clear();
+  /*display.clear();
   display.setColor(WHITE);
   display.setFont(ArialMT_Plain_24);
   display.setTextAlignment(TEXT_ALIGN_CENTER);
   display.drawString(64, 10, "Waiting");
   display.drawString(64, 34, "for start");
-  display.display();
+  display.display();*/
   delay(100);
   while (clicks == 0) {};
 
@@ -634,20 +650,28 @@ void variableParameter(){
     //lcd.print(data_output);
 }
 
+
+long last_ddt = 0;
+long timeLastStroke = 0;
+
 /*------------------INTERRUPT-----------------------------------*/
 void IRAM_ATTR calcrpm() {
   click_time = millis();
-  rpm = 60000 / (click_time - last_click_time);
+  //rpm = 60000 / (click_time - last_click_time);
+
+  long ddt = click_time - last_click_time;
   last_click_time = click_time;
-  accel = rpm - old_rpm;
-  if ((accel > 20) && (puffer == 0)){ // > 20 to eliminate micro "acceleration" due to splashing water (3 for one magnet)
-    strokes ++;
-    puffer = 20; // prevents counting two strokes due to still accelerating rotor
-  }
-  if (puffer > 0){
-    puffer --;
-  }
-  old_rpm = rpm;
+  SerialDebug.println(ddt);
+  if (ddt < (0.95*last_ddt)) {
+        // new stroke
+        if ((click_time - timeLastStroke) > 1400) {
+          //strokes_minute = 60000/(newTime - timeLastStroke);
+          //avg_speed = 1000*(distance - distance_last_stroke)/(newTime - timeLastStroke);          
+          timeLastStroke = click_time;
+          strokes++;
+        }
+      }
+      last_ddt = ddt;
 }
 
 void IRAM_ATTR rowerinterrupt() {
@@ -731,6 +755,9 @@ void reset() {
   rpm = 0;
   stm_RA.clear();
   mps_RA.clear();
+  for (int i = 0; i < 20; i++ ) {
+    ticks.add(0.0f);
+  }
   trend = 0;
   resetTimer = 0;
   //lcd.clear();
@@ -764,7 +791,7 @@ int read_LCD_buttons()
   */
 }
 
-void displayTimeBattery()
+/*void displayTimeBattery()
 {
   float h,m,s;
   unsigned long over;
@@ -801,12 +828,12 @@ void displayTimeBattery()
   display.fillRect(0, 0, 128, 1);
   display.fillRect(128 - battery_RA.getAverage(), 0, 128, 4);
 
-}
+}*/
 
 void setup() {
 
   // Start the OLED Display
-  display.init();
+  /*display.init();
   display.setFont(ArialMT_Plain_16);
   display.flipScreenVertically();                 // this is to flip the screen 180 degrees
 
@@ -814,7 +841,7 @@ void setup() {
   display.setColor(WHITE);
   display.setTextAlignment(TEXT_ALIGN_CENTER);
   display.drawString(64, 4, "ArduRower");
-  display.display();
+  display.display();*/
 
   SerialDebug.begin(115200);
   SerialDebug.println("/************************************");
@@ -889,7 +916,7 @@ void rowing() {
 
       if (deviceConnected) {        //** Send a value to protopie. The value is in txValue **//
 
-        long sec = 1000 * (millis() - start);
+        long sec = 1000*(millis() - start);
         rdKpi.strokeRate = (int)round(spm + old_spm);
         rdKpi.strokeCount = strokes;
         rdKpi.averageStokeRate = (int)(strokes * 60 * 2 / sec);
@@ -899,12 +926,12 @@ void rowing() {
         rdKpi.averagePace = (int)round(500 / avrMs);
         rdKpi.instantaneousPower = (int)round(2.8 * Ms * Ms * Ms); //https://www.concept2.com/indoor-rowers/training/calculators/watts-calculator
         rdKpi.averagePower = (int)round(2.8 * avrMs * avrMs * avrMs);
-        rdKpi.elapsedTime = sec;
+        rdKpi.elapsedTime = sec/1000000;
 
         setCxRowerData();
         //setCxLightRowerData();
         //delay(500); // bluetooth stack will go into congestion, if too many packets are sent
-        SerialDebug.println("Send data " + String(rdKpi.strokeCount));
+        //SerialDebug.println("Send data " + String(rdKpi.strokeCount));
 
         delay(10);
         setCxBattery();
@@ -938,15 +965,15 @@ void rowing() {
       }
 
       //battery 3.2 - 4.2V
-      int batt = map(analogRead(BATPIN), MinADC, MaxADC, 0, 127);
+      /*int batt = map(analogRead(BATPIN), MinADC, MaxADC, 0, 127);
       if (batt > 127) batt = 127;
       if (batt < 0) batt = 0;
-      battery_RA.addValue(batt);
+      battery_RA.addValue(batt);*/
       //SerialDebug.println(String(analogRead(BATPIN)) + " batt: "+ String(batt)+ " battery: "+ String(battery));
 
     }
     
-    display.clear();
+    /*display.clear();
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
     display.drawString(5, 23, "meters");
@@ -962,11 +989,11 @@ void rowing() {
     display.drawString(128, 26, String(round((spm + old_spm)/2), 0));
     display.drawString(128, -3, String(Ms, 2)); // "m/s"
     display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.drawString(0, -3, String(meters, DEC)); //"m" 
+    display.drawString(0, -3, String(meters, DEC)); //"m"  */
 
 
     /* if select button is pressed reset */
-    switch (read_LCD_buttons())
+    /*switch (read_LCD_buttons())
     {
       case btnSELECT:
         {
@@ -991,7 +1018,7 @@ void rowing() {
         }
         break;
       }
-    }
+    }*/
 
 /*-------SIMULATE ROWING-------------*/
 //      if (random(0, 100) < 30) {
@@ -999,11 +1026,11 @@ void rowing() {
 //         }
 /*-------SIMULATE ROWING-------------*/
 
-  display.display();
+  //display.display();
   }
 
   //SerialDebug.println("*****EXIT*********");
-
+ 
 }
 
 
